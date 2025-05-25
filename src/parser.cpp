@@ -17,13 +17,17 @@ Command Parser::parse(std::string &command) {
   } else if (command.substr(0, 4) == "LIST") {
     trim_ftp_command(command);
     return Command::LIST;
-  } else if (command.substr(0, 3) == "DIR") {
+  } else if (command.substr(0, 4) == "QUIT") {
     trim_ftp_command(command);
-    return Command::DIR;
+    return Command::QUIT;
+  } else if (command.substr(0, 4) == "RETR") {
+    trim_ftp_command(command);
+    return Command::RETR;
   } else if (command.substr(0, 3) == "GET") {
     trim_ftp_command(command);
     return Command::GET;
   }
+  std::cout << "Unknown command: " << command << std::endl;
   return Command::ERROR;
 }
 
@@ -32,11 +36,16 @@ void Parser::trim_ftp_command(std::string &str) {
   while (!str.empty() && (str.back() == '\r' || str.back() == '\n')) {
     str.pop_back();
   }
-  if (str.size() < 5) {
+  if (str.size() < 4) {
     str = "";
     return;
   }
-  str = str.substr(5);
+  for (int i = 0; i < str.size(); i++) {
+    if (str[i] == ' ') {
+      str = str.substr(i + 1);
+      break;
+    }
+  }
 }
 
 void Parser::Upper(std::string &str) {

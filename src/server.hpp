@@ -26,6 +26,9 @@ private:
                          std::string_view password); // 校验用户密码
   static int handle_list(std::string_view ip,
                          std::string_view path); // 列出文件
+  static int handle_get(std::string_view ip,
+                        std::string_view path); // 下载文件
+  static int handle_quit(std::string_view ip);  // 退出登录
 private:
   // IP 与 用户名的映射
   static std::unordered_map<std::string, std::string> users;

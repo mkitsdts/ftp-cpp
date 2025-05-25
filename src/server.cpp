@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -78,7 +79,6 @@ int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
     std::lock_guard<std::mutex> lock(clients_mutex);
     clients[ip].address = addr;
     clients[ip].client_fd = client_fd;
-    clients_mutex.unlock();
   }
   std::string welcome_msg = "220 Welcome to the FTP server\r\n";
   send(client_fd, welcome_msg.c_str(), welcome_msg.size(), 0);
@@ -103,14 +103,19 @@ int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
     case Command::LIST:
       handle_list(ip, command);
       break;
-    case Command::DIR:
-      // wait for achieve
-      break;
     case Command::GET:
-      // wait for achieve
+      handle_get(ip, command);
+      break;
+    case Command::RETR:
+      handle_get(ip, command);
+      break;
+    case Command::QUIT:
+      handle_quit(ip);
       break;
     default:
       std::cerr << "Invalid command" << std::endl;
+      std::string error_msg = "500 Unknown command\r\n";
+      send(client_fd, error_msg.c_str(), error_msg.size(), 0);
       break;
     }
   }
@@ -126,6 +131,9 @@ int FtpServer::handle_user(std::string_view ip, std::string_view username) {
     std::lock_guard<std::mutex> lock(users_mutex);
     users[std::string(ip)] = username;
     std::cout << "User " << username << " logged in from " << ip << std::endl;
+    std::string response = "331 User name okay, need password\r\n";
+    send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+         0);
     return COMMON;
   }
   return SERVER_INNER_ERROR;
@@ -135,7 +143,7 @@ int FtpServer::handle_pass(std::string_view ip, std::string_view password) {
   auto username = users[std::string(ip)];
   if (USER_INFO.size() == 0) {
     std::cerr << "No user information available" << std::endl;
-    std::string mess = "wrong password\r\n";
+    std::string mess = "530 Login incorrect\r\n";
     send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
     return SERVER_INNER_ERROR;
   }
@@ -144,13 +152,13 @@ int FtpServer::handle_pass(std::string_view ip, std::string_view password) {
       {
         std::lock_guard<std::mutex> lock(login_status_mutex);
         login_status[std::string(ip)] = true;
-        std::string mess = "logged in successfully\r\n";
+        std::string mess = "230 User logged in, proceed\r\n";
         send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
       }
       return COMMON;
     }
   }
-  std::string mess = "Invalid password for user\r\n";
+  std::string mess = "530 Login incorrect\r\n";
   send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
   return SERVER_INNER_ERROR;
 }
@@ -164,7 +172,12 @@ int FtpServer::handle_list(std::string_view ip, std::string_view path) {
     return SERVER_INNER_ERROR;
   }
   try {
-    std::string directory = ROOT_PATH + std::string(path); // 默认当前目录
+    std::string directory;
+    if (path == "") {
+      directory = ROOT_PATH + std::string(path); // 默认当前目录
+    } else {
+      directory = ROOT_PATH + '/' + std::string(path);
+    }
 
     std::stringstream file_list;
     for (const auto &entry : std::filesystem::directory_iterator(directory)) {
@@ -223,5 +236,101 @@ int FtpServer::handle_list(std::string_view ip, std::string_view path) {
          error_msg.size(), 0);
     return SERVER_INNER_ERROR;
   }
+  return COMMON;
+}
+
+int FtpServer::handle_quit(std::string_view ip) {
+  // 退出登录
+  std::cout << "User " << users[std::string(ip)] << " logged out from " << ip
+            << std::endl;
+  std::string mess = "221 Goodbye\r\n";
+  send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+  close(clients[std::string(ip)].client_fd);
+  {
+    std::lock_guard<std::mutex> lock(users_mutex);
+    users.erase(std::string(ip));
+  }
+  {
+    std::lock_guard<std::mutex> lock(login_status_mutex);
+    login_status.erase(std::string(ip));
+  }
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    clients.erase(std::string(ip));
+  }
+  return COMMON;
+}
+
+int FtpServer::handle_get(std::string_view ip, std::string_view path) {
+  // 检查登陆状态
+  if (login_status[std::string(ip)] == false) {
+    std::cerr << "User not logged in" << std::endl;
+    std::string mess = "Please login first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  try {
+    std::string file_path = ROOT_PATH + "/" + path.data();
+
+    // 检查文件是否存在
+    if (!std::filesystem::exists(file_path)) {
+      std::string error_msg = "550 File not found\r\n";
+      send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+           error_msg.size(), 0);
+      return SERVER_INNER_ERROR;
+    }
+
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file.is_open()) {
+      std::string error_msg = "550 Failed to open file\r\n";
+      send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+           error_msg.size(), 0);
+      return SERVER_INNER_ERROR;
+    }
+
+    // 获取文件大小
+    file.seekg(0, std::ios::end);
+    size_t file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    // 发送文件传输开始消息
+    std::string response = "150 Opening BINARY mode data connection for " +
+                           std::string(path) + " (" +
+                           std::to_string(file_size) + " bytes)\r\n";
+    send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+         0);
+    // 发送文件内容
+    char buffer[BUFFER_SIZE];
+    size_t total_sent = 0;
+
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+      size_t bytes_read = file.gcount();
+      ssize_t bytes_sent =
+          send(clients[std::string(ip)].client_fd, buffer, bytes_read, 0);
+
+      if (bytes_sent < 0) {
+        std::cerr << "Failed to send file data" << std::endl;
+        break;
+      }
+      total_sent += bytes_sent;
+    }
+
+    file.close();
+
+    // 发送传输完成消息
+    response = "226 Transfer complete. " + std::to_string(total_sent) +
+               " bytes sent\r\n";
+    send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+         0);
+    std::cout << "File " << path << " sent to " << ip << " (" << total_sent
+              << " bytes)" << std::endl;
+  } catch (const std::exception &ex) {
+    std::cerr << "Error in handle_get: " << ex.what() << std::endl;
+    std::string error_msg = "550 Transfer failed\r\n";
+    send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+         error_msg.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+
   return COMMON;
 }

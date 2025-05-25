@@ -12,8 +12,9 @@ enum class Command {
   USER,
   PASS,
   LIST,
-  DIR,
   GET,
+  QUIT,
+  RETR,
   ERROR,
 };
 
