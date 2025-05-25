@@ -79,6 +79,7 @@ int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
     std::lock_guard<std::mutex> lock(clients_mutex);
     clients[ip].address = addr;
     clients[ip].client_fd = client_fd;
+    clients[ip].curr_path = ROOT_PATH; // 设置当前路径为根目录
   }
   std::string welcome_msg = "220 Welcome to the FTP server\r\n";
   send(client_fd, welcome_msg.c_str(), welcome_msg.size(), 0);
@@ -112,11 +113,33 @@ int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
     case Command::QUIT:
       handle_quit(ip);
       break;
-    default:
+    case Command::PWD:
+      handle_pwd(ip, command);
+      break;
+    case Command::LCD:
+      handle_lcd(ip, command);
+      break;
+    case Command::SYST:
+      handle_syst(ip);
+      break;
+    case Command::EPSV:
+      handle_epsv(ip);
+      break;
+    case Command::PASV:
+      handle_pasv(ip);
+      break;
+    case Command::TYPE: {
+      std::string response = "200 Type set to I\r\n";
+      send(clients[std::string(ip)].client_fd, response.c_str(),
+           response.size(), 0);
+      break;
+    }
+    case Command::ERROR: {
       std::cerr << "Invalid command" << std::endl;
       std::string error_msg = "500 Unknown command\r\n";
       send(client_fd, error_msg.c_str(), error_msg.size(), 0);
       break;
+    }
     }
   }
   {
@@ -174,9 +197,9 @@ int FtpServer::handle_list(std::string_view ip, std::string_view path) {
   try {
     std::string directory;
     if (path == "") {
-      directory = ROOT_PATH + std::string(path); // 默认当前目录
+      directory = clients[std::string(ip)].curr_path; // 默认当前目录
     } else {
-      directory = ROOT_PATH + '/' + std::string(path);
+      directory = clients[std::string(ip)].curr_path + '/' + std::string(path);
     }
 
     std::stringstream file_list;
@@ -256,6 +279,9 @@ int FtpServer::handle_quit(std::string_view ip) {
   }
   {
     std::lock_guard<std::mutex> lock(clients_mutex);
+    clients[std::string(ip)].client_fd = -1;
+    clients[std::string(ip)].data_fd = -1;
+    clients[std::string(ip)].curr_path = "";
     clients.erase(std::string(ip));
   }
   return COMMON;
@@ -264,13 +290,23 @@ int FtpServer::handle_quit(std::string_view ip) {
 int FtpServer::handle_get(std::string_view ip, std::string_view path) {
   // 检查登陆状态
   if (login_status[std::string(ip)] == false) {
-    std::cerr << "User not logged in" << std::endl;
-    std::string mess = "Please login first\r\n";
+    std::string mess = "530 Not logged in\r\n";
     send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
     return SERVER_INNER_ERROR;
   }
+
+  // 检查数据连接是否可用
+  if (clients[std::string(ip)].data_fd == -1) {
+    std::string mess = "425 Use PASV first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+
   try {
     std::string file_path = ROOT_PATH + "/" + path.data();
+
+    std::cout << "Requesting file: " << path << std::endl;
+    std::cout << "Full path: " << file_path << std::endl;
 
     // 检查文件是否存在
     if (!std::filesystem::exists(file_path)) {
@@ -293,20 +329,40 @@ int FtpServer::handle_get(std::string_view ip, std::string_view path) {
     size_t file_size = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    // 发送文件传输开始消息
-    std::string response = "150 Opening BINARY mode data connection for " +
-                           std::string(path) + " (" +
-                           std::to_string(file_size) + " bytes)\r\n";
+    // 发送 150 响应到控制连接
+    std::string response = std::format(
+        "150 Opening BINARY mode data connection for {} bytes\r\n", file_size);
     send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
          0);
-    // 发送文件内容
+
+    // 等待客户端连接数据端口
+    int listen_fd = clients[std::string(ip)].data_fd;
+    sockaddr_in client_data_addr;
+    socklen_t addr_len = sizeof(client_data_addr);
+
+    std::cout << "Waiting for data connection..." << std::endl;
+    int data_fd =
+        accept(listen_fd, (struct sockaddr *)&client_data_addr, &addr_len);
+    if (data_fd < 0) {
+      std::cerr << "Accept data connection failed" << std::endl;
+      std::string error_msg = "425 Cannot open data connection\r\n";
+      send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+           error_msg.size(), 0);
+      file.close();
+      close(listen_fd);
+      clients[std::string(ip)].data_fd = -1;
+      return SERVER_INNER_ERROR;
+    }
+
+    std::cout << "Data connection established" << std::endl;
+
+    // 通过数据连接发送文件内容
     char buffer[BUFFER_SIZE];
     size_t total_sent = 0;
 
     while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
       size_t bytes_read = file.gcount();
-      ssize_t bytes_sent =
-          send(clients[std::string(ip)].client_fd, buffer, bytes_read, 0);
+      ssize_t bytes_sent = send(data_fd, buffer, bytes_read, 0);
 
       if (bytes_sent < 0) {
         std::cerr << "Failed to send file data" << std::endl;
@@ -316,14 +372,18 @@ int FtpServer::handle_get(std::string_view ip, std::string_view path) {
     }
 
     file.close();
+    close(data_fd);
+    close(listen_fd);
+    clients[std::string(ip)].data_fd = -1;
 
-    // 发送传输完成消息
-    response = "226 Transfer complete. " + std::to_string(total_sent) +
-               " bytes sent\r\n";
+    // 发送传输完成消息到控制连接
+    response = "226 Transfer complete\r\n";
     send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
          0);
+
     std::cout << "File " << path << " sent to " << ip << " (" << total_sent
               << " bytes)" << std::endl;
+
   } catch (const std::exception &ex) {
     std::cerr << "Error in handle_get: " << ex.what() << std::endl;
     std::string error_msg = "550 Transfer failed\r\n";
@@ -332,5 +392,134 @@ int FtpServer::handle_get(std::string_view ip, std::string_view path) {
     return SERVER_INNER_ERROR;
   }
 
+  return COMMON;
+}
+
+int FtpServer::handle_pwd(std::string_view ip, std::string_view path) {
+  // 检查登陆状态
+  if (login_status[std::string(ip)] == false) {
+    std::cerr << "User not logged in" << std::endl;
+    std::string mess = "Please login first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  std::string response = "257 \"" + clients[std::string(ip)].curr_path +
+                         "\" is the current directory\r\n";
+  send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+       0);
+  return COMMON;
+}
+
+int FtpServer::handle_lcd(std::string_view ip, std::string_view path) {
+  // 检查登陆状态
+  if (login_status[std::string(ip)] == false) {
+    std::cerr << "User not logged in" << std::endl;
+    std::string mess = "Please login first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  // 切换目录
+  clients[std::string(ip)].curr_path =
+      clients[std::string(ip)].curr_path + '/' + path.data();
+  std::string response =
+      "250 Directory changed to " + std::string(path) + "\r\n";
+  send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+       0);
+  return COMMON;
+}
+
+int FtpServer::handle_syst(std::string_view ip) {
+  // 检查登陆状态
+  if (login_status[std::string(ip)] == false) {
+    std::cerr << "User not logged in" << std::endl;
+    std::string mess = "Please login first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  std::string response = "215 UNIX Type: L8\r\n";
+  send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+       0);
+  return COMMON;
+}
+
+int FtpServer::handle_pasv(std::string_view ip) {
+  // 检查登陆状态
+  if (login_status[std::string(ip)] == false) {
+    std::cerr << "User not logged in" << std::endl;
+    std::string mess = "Please login first\r\n";
+    send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  // 分配一个新的套接字用于数据传输
+  int data_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (data_fd < 0) {
+    std::cerr << "Failed to create data socket" << std::endl;
+    return SERVER_INNER_ERROR;
+  }
+  // 绑定套接字到地址
+  sockaddr_in data_addr;
+  data_addr.sin_family = AF_INET;
+  data_addr.sin_addr.s_addr = INADDR_ANY;
+  data_addr.sin_port = 0; // 让系统自动分配端口
+  if (bind(data_fd, (struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
+    std::cerr << "Bind failed" << std::endl;
+    close(data_fd);
+    return SERVER_INNER_ERROR;
+  }
+  // 更新客户端信息
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    clients[std::string(ip)].data_fd = data_fd;
+  }
+
+  // 开始监听数据连接
+  if (listen(data_fd, 1) < 0) {
+    std::cerr << "Listen failed" << std::endl;
+    close(data_fd);
+    std::string error_msg = "425 Cannot open data connection\r\n";
+    send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+         error_msg.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+
+  // 获取分配的端口号
+  socklen_t addr_len = sizeof(data_addr);
+  if (getsockname(data_fd, (struct sockaddr *)&data_addr, &addr_len) < 0) {
+    std::cerr << "Get socket name failed: " << strerror(errno) << std::endl;
+    close(data_fd);
+    std::string error_msg = "425 Cannot open data connection\r\n";
+    send(clients[std::string(ip)].client_fd, error_msg.c_str(),
+         error_msg.size(), 0);
+    return SERVER_INNER_ERROR;
+  }
+  int port = ntohs(data_addr.sin_port);
+
+  std::string response =
+      std::format("227 Entering Passive Mode (127,0,0,1,{},{})\r\n", port / 256,
+                  port % 256);
+  std::cout << "Passive mode: " << response << std::endl;
+  // 发送响应
+  send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+       0);
+  std::cout << "Data connection established" << std::endl;
+  return COMMON;
+}
+
+int FtpServer::handle_epsv(std::string_view ip) {
+  // 检查登陆状态
+  //   if (login_status[std::string(ip)] == false) {
+  //     std::cerr << "User not logged in" << std::endl;
+  //     std::string mess = "Please login first\r\n";
+  //     send(clients[std::string(ip)].client_fd, mess.c_str(), mess.size(), 0);
+  //     return SERVER_INNER_ERROR;
+  //   }
+  //   std::string response = "229 Entering Extended Passive Mode (|||0|)\r\n";
+  //   send(clients[std::string(ip)].client_fd, response.c_str(),
+  //   response.size(),
+  //        0);
+  //   return COMMON;
+  std::string response = "500 Not Provided\r\n";
+  send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
+       0);
   return COMMON;
 }

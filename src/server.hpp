@@ -3,6 +3,7 @@
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
+
 namespace ftp {
 
 class FtpServer {
@@ -28,6 +29,13 @@ private:
                          std::string_view path); // 列出文件
   static int handle_get(std::string_view ip,
                         std::string_view path); // 下载文件
+  static int handle_pwd(std::string_view ip,
+                        std::string_view path); // 显示当前目录
+  static int handle_lcd(std::string_view ip,
+                        std::string_view path); // 切换目录
+  static int handle_syst(std::string_view ip);  // 显示系统信息
+  static int handle_pasv(std::string_view ip);  // 主动模式
+  static int handle_epsv(std::string_view ip);  // 被动模式
   static int handle_quit(std::string_view ip);  // 退出登录
 private:
   // IP 与 用户名的映射

@@ -26,6 +26,24 @@ Command Parser::parse(std::string &command) {
   } else if (command.substr(0, 3) == "GET") {
     trim_ftp_command(command);
     return Command::GET;
+  } else if (command.substr(0, 3) == "PWD") {
+    trim_ftp_command(command);
+    return Command::PWD;
+  } else if (command.substr(0, 4) == "EPSV") {
+    trim_ftp_command(command);
+    return Command::EPSV;
+  } else if (command.substr(0, 4) == "PASV") {
+    trim_ftp_command(command);
+    return Command::PASV;
+  } else if (command.substr(0, 3) == "LCD") {
+    trim_ftp_command(command);
+    return Command::LCD;
+  } else if (command.substr(0, 4) == "SYST") {
+    trim_ftp_command(command);
+    return Command::SYST;
+  } else if (command.substr(0, 4) == "TYPE") {
+    trim_ftp_command(command);
+    return Command::TYPE;
   }
   std::cout << "Unknown command: " << command << std::endl;
   return Command::ERROR;
