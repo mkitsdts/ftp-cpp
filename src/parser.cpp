@@ -44,6 +44,9 @@ Command Parser::parse(std::string &command) {
   } else if (command.substr(0, 4) == "TYPE") {
     trim_ftp_command(command);
     return Command::TYPE;
+  } else if (command.substr(0, 4) == "PORT") {
+    trim_ftp_command(command);
+    return Command::PORT;
   }
   std::cout << "Unknown command: " << command << std::endl;
   return Command::ERROR;
@@ -91,4 +94,48 @@ bool Parser::is_valid_command(const std::string &command) {
     }
   }
   return true;
+}
+
+std::pair<std::string, int> Parser::parse_path(std::string_view ip) {
+  // 把逗号ip转换成点分十进制
+  std::string path;
+  int first = 0;
+  int second = 0;
+
+  int times = 0;
+  for (auto c : ip) {
+    if (times < 4) {
+      if (c == ',') {
+        times++;
+        if (times == 4) {
+          continue;
+        }
+        path += '.';
+      } else if (c >= '0' && c <= '9') {
+        path += c;
+      } else {
+        return {"", -1}; // 无效的IP格式
+      }
+    } else {
+      if (times == 4) {
+        if (c == ',') {
+          times++;
+          first = first * 256;
+          continue; // 跳过逗号
+        }
+        if (c >= '0' && c <= '9') {
+          first = first * 10 + (c - '0');
+        } else {
+          return {"", -1}; // 无效的端口格式
+        }
+      } else {
+        if (c >= '0' && c <= '9') {
+          second = second * 10 + (c - '0');
+        } else {
+          return {"", -1}; // 无效的端口格式
+        }
+      }
+    }
+  }
+  return {path, first + second}; // 返回点分十进制IP和端口号
 }

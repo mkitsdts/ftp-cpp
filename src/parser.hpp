@@ -7,6 +7,7 @@ namespace ftp {
 class Parser {
 public:
   static Command parse(std::string &command);
+  static std::pair<std::string, int> parse_path(std::string_view ip);
 
 private:
   Parser() = default;

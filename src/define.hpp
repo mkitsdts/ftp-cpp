@@ -21,13 +21,15 @@ enum class Command {
   EPSV,
   PASV,
   TYPE,
+  PORT,
   ERROR,
 };
 
 struct Client {
-  sockaddr_in address;   // 客户端地址
-  int client_fd;         // 通信文件描述符
-  int data_fd;           // 数据传输文件描述符
-  std::string curr_path; // 当前路径
+  sockaddr_in address;      // 客户端地址
+  int client_fd;            // 通信文件描述符
+  int data_fd;              // 数据传输文件描述符
+  bool is_positive = false; // 数据传输模式
+  std::string curr_path;    // 当前路径
 };
 } // namespace ftp

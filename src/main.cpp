@@ -1,5 +1,4 @@
 #include "server.hpp"
-
 using namespace ftp;
 
 int main() {
