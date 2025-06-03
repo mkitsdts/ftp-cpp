@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <netinet/in.h>
@@ -68,7 +69,26 @@ void FtpServer::start() {
 }
 
 void FtpServer::stop() {
-  // Implementation of stopping the FTP server
+  // 停止服务器
+  std::cout << "Stopping FTP server..." << std::endl;
+  {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    for (auto &client : clients) {
+      close(client.second.client_fd);
+      client.second.client_fd = -1;
+      client.second.data_fd = -1;
+    }
+    clients.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(users_mutex);
+    users.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(login_status_mutex);
+    login_status.clear();
+  }
+  std::cout << "FTP server stopped." << std::endl;
 }
 
 int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
@@ -79,7 +99,7 @@ int FtpServer::handle_client(sockaddr_in &addr, int client_fd) {
     std::lock_guard<std::mutex> lock(clients_mutex);
     clients[ip].address = addr;
     clients[ip].client_fd = client_fd;
-    clients[ip].curr_path = ROOT_PATH; // 设置当前路径为根目录
+    clients[ip].curr_path = "/"; // 设置根目录
   }
   std::string welcome_msg = "220 Welcome to the FTP server\r\n";
   send(client_fd, welcome_msg.c_str(), welcome_msg.size(), 0);
@@ -199,10 +219,21 @@ int FtpServer::handle_list(std::string_view ip, std::string_view path) {
   try {
     std::string directory;
     if (path == "") {
-      directory = clients[std::string(ip)].curr_path; // 默认当前目录
+      if (clients[std::string(ip)].curr_path != "/") {
+        directory = ROOT_PATH + '/' + clients[std::string(ip)].curr_path;
+      } else {
+        directory = ROOT_PATH;
+      }
     } else {
-      directory = clients[std::string(ip)].curr_path + '/' + std::string(path);
+      if (clients[std::string(ip)].curr_path != "/") {
+        directory = ROOT_PATH + '/' + clients[std::string(ip)].curr_path + '/' +
+                    std::string(path);
+      } else {
+        directory = ROOT_PATH + '/' + std::string(path);
+      }
     }
+    std::cout << "paragram path: " << path << std::endl;
+    std::cout << "Listing directory: " << directory << std::endl;
 
     std::stringstream file_list;
     for (const auto &entry : std::filesystem::directory_iterator(directory)) {
@@ -304,7 +335,13 @@ int FtpServer::handle_get(std::string_view ip, std::string_view path) {
   }
 
   try {
-    std::string file_path = ROOT_PATH + "/" + path.data();
+    std::string file_path;
+    if (clients[std::string(ip)].curr_path == "/") {
+      file_path = ROOT_PATH + "/" + path.data();
+    } else {
+      file_path = ROOT_PATH + "/" + clients[std::string(ip)].curr_path + "/" +
+                  path.data();
+    }
 
     std::cout << "Requesting file: " << path << std::endl;
     std::cout << "Full path: " << file_path << std::endl;
@@ -376,7 +413,6 @@ int FtpServer::handle_get(std::string_view ip, std::string_view path) {
 
       file.close();
       close(data_fd);
-      close(listen_fd);
       clients[std::string(ip)].data_fd = -1;
 
       // 发送传输完成消息到控制连接
@@ -451,10 +487,14 @@ int FtpServer::handle_lcd(std::string_view ip, std::string_view path) {
     return SERVER_INNER_ERROR;
   }
   // 切换目录
-  clients[std::string(ip)].curr_path =
-      clients[std::string(ip)].curr_path + '/' + path.data();
-  std::string response =
-      "250 Directory changed to " + std::string(path) + "\r\n";
+  if (clients[std::string(ip)].curr_path == "/") {
+    clients[std::string(ip)].curr_path = std::string(path);
+  } else {
+    clients[std::string(ip)].curr_path += '/' + std::string(path);
+  }
+  std::string response = "250 Directory changed to " +
+                         std::string(clients[std::string(ip)].curr_path) +
+                         "\r\n";
   send(clients[std::string(ip)].client_fd, response.c_str(), response.size(),
        0);
   return COMMON;

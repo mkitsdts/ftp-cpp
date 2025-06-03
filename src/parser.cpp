@@ -64,9 +64,10 @@ void Parser::trim_ftp_command(std::string &str) {
   for (int i = 0; i < str.size(); i++) {
     if (str[i] == ' ') {
       str = str.substr(i + 1);
-      break;
+      return;
     }
   }
+  str = "";
 }
 
 void Parser::Upper(std::string &str) {

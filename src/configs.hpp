@@ -6,8 +6,8 @@ namespace ftp {
 constexpr int BUFFER_SIZE = 1024;  // 缓冲区大小
 constexpr int MAX_CONNECTIONS = 5; // 最大连接数
 
-constexpr int MAX_PORT = 65540; // 最大端口号
-constexpr int MIN_PORT = 1024;  // 最小端口号
+constexpr int MAX_PORT = 21010; // 最大端口号
+constexpr int MIN_PORT = 21000; // 最小端口号
 
 constexpr int PORT = 21; // FTP 默认端口
 

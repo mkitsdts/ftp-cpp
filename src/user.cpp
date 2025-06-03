@@ -2,7 +2,7 @@
 #include "configs.hpp"
 using namespace ftp;
 
-// 判断用户是否存在
+// 鍒ゆ柇鐢ㄦ埛鏄惁瀛樺湪
 bool User::handle_user(std::string_view username) {
   for (const auto &user : USER_INFO) {
     if (user.first == username) {
@@ -12,7 +12,7 @@ bool User::handle_user(std::string_view username) {
   return false;
 }
 
-// 校验密码
+// 鏍￠獙瀵嗙爜
 bool User::handle_pass(std::string_view username, std::string_view password) {
   auto it = USER_INFO.find(std::string(username));
   if (it != USER_INFO.end() && it->second == password) {
